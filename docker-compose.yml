@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:15
+    container_name: halal_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: Huffazpro1!
+      POSTGRES_DB: halal_jakim
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/01_init.sql
+      - ./halal_data_cleaned.csv:/docker-entrypoint-initdb.d/halal_data_cleaned.csv
+      - ./init_cb.sql:/docker-entrypoint-initdb.d/02_init_cb.sql
+      - ./jakim_cb.csv:/docker-entrypoint-initdb.d/jakim_cb.csv
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    container_name: halal_api
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: halal_jakim
+      DB_USER: postgres
+      DB_PASSWORD: Huffazpro1!
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

@@ -7,7 +7,6 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -44,14 +43,13 @@ import kotlin.math.*
 private val QiblaGreen = Color(0xFF1A7A4A)
 
 // ─────────────────────────────────────────────────────────────────────────────
-// QiblaScreen — Real-time live Qibla compass (Dark & Light Mode Aware)
+// QiblaScreen — Real-time live Qibla compass
 // ─────────────────────────────────────────────────────────────────────────────
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun QiblaScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val scope   = rememberCoroutineScope()
-    val isDark  = isSystemInDarkTheme()
 
     var location           by remember { mutableStateOf<LocationData?>(null) }
     var reading            by remember { mutableStateOf<CompassReading?>(null) }
@@ -218,7 +216,7 @@ fun QiblaScreen(onBack: () -> Unit) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             CircularProgressIndicator(color = QiblaGreen)
                             Spacer(Modifier.height(16.dp))
-                            Text("Mengesan koordinat GPS...", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Mengesan koordinat GPS...", color = Color.Gray)
                         }
                     }
                 }
@@ -229,7 +227,7 @@ fun QiblaScreen(onBack: () -> Unit) {
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             Icon(Icons.Default.LocationOff, null, tint = Color.Red, modifier = Modifier.size(64.dp))
-                            Text(errorMsg!!, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                            Text(errorMsg!!, color = Color.Gray, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                             Button(
                                 onClick = { loadLocation() },
                                 colors = ButtonDefaults.buttonColors(containerColor = QiblaGreen)
@@ -269,11 +267,9 @@ fun QiblaScreen(onBack: () -> Unit) {
                     ) {
                         // Live Alignment Status Card
                         if (isAligned) {
-                            val alignBg = if (isDark) Color(0xFF1B5E20) else Color(0xFFE8F5E9)
-                            val alignText = if (isDark) Color(0xFFB9F6CA) else Color(0xFF2E7D32)
                             Card(
-                                colors = CardDefaults.cardColors(containerColor = alignBg),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, alignText.copy(alpha = 0.5f))
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFFE8F5E9)),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF81C784))
                             ) {
                                 Row(
                                     Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
@@ -284,19 +280,14 @@ fun QiblaScreen(onBack: () -> Unit) {
                                     Text(
                                         "Menghadap Arah Kiblat!",
                                         fontWeight = FontWeight.Bold,
-                                        color = alignText,
+                                        color = Color(0xFF2E7D32),
                                         fontSize = 14.sp
                                     )
                                 }
                             }
                         }
 
-                        // Compass Dial & Needle Colors
-                        val dialBgColor = if (isDark) Color(0xFF282828) else Color.White
-                        val dialBorderColor = if (isDark) Color(0xFF4A4A4A) else QiblaGreen.copy(alpha = 0.3f)
-                        val dialTextColor = if (isDark) Color(0xFFE2E2E2) else Color(0xFF2C2C2C)
-                        val tickColor = if (isDark) Color.Gray.copy(alpha = 0.6f) else Color.Gray.copy(alpha = 0.5f)
-
+                        // Compass Dial & Needle
                         val textMeasurer = rememberTextMeasurer()
                         Box(contentAlignment = Alignment.Center) {
 
@@ -311,9 +302,9 @@ fun QiblaScreen(onBack: () -> Unit) {
                                 val radius = size.width / 2f - 10f
 
                                 // Outer ring
-                                drawCircle(color = dialBgColor, radius = radius, center = Offset(cx, cy))
+                                drawCircle(color = Color.White, radius = radius, center = Offset(cx, cy))
                                 drawCircle(
-                                    color = dialBorderColor,
+                                    color = QiblaGreen.copy(alpha = 0.3f),
                                     radius = radius,
                                     center = Offset(cx, cy),
                                     style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f)
@@ -330,7 +321,7 @@ fun QiblaScreen(onBack: () -> Unit) {
                                     val x2 = cx + outer * sin(angle).toFloat()
                                     val y2 = cy - outer * cos(angle).toFloat()
                                     drawLine(
-                                        tickColor,
+                                        Color.Gray.copy(alpha = 0.5f),
                                         Offset(x1, y1), Offset(x2, y2),
                                         strokeWidth = if (isMajor) 2.5f else 1.5f
                                     )
@@ -346,7 +337,7 @@ fun QiblaScreen(onBack: () -> Unit) {
                                     val textResult = textMeasurer.measure(
                                         label,
                                         TextStyle(
-                                            color = if (label == "N") Color(0xFFFF5252) else dialTextColor,
+                                            color = if (label == "N") Color(0xFFFF5252) else Color(0xFF2C2C2C),
                                             fontSize = if (label == "N") 17.sp else 13.sp,
                                             fontWeight = if (label == "N") FontWeight.Bold else FontWeight.SemiBold,
                                         )
@@ -361,7 +352,7 @@ fun QiblaScreen(onBack: () -> Unit) {
                                 }
 
                                 // Center dot
-                                drawCircle(color = if (isDark) Color(0xFF00E676) else QiblaGreen, radius = 6f, center = Offset(cx, cy))
+                                drawCircle(color = QiblaGreen, radius = 6f, center = Offset(cx, cy))
                             }
 
                             // Qibla Arrow (rotates directly towards Qibla)
@@ -375,7 +366,7 @@ fun QiblaScreen(onBack: () -> Unit) {
                                 val arrowLen = 85f
                                 val arrowW   = 10f
 
-                                val arrowColor = if (isAligned) Color(0xFF00E676) else if (isDark) Color(0xFF66BB6A) else QiblaGreen
+                                val arrowColor = if (isAligned) Color(0xFF2E7D32) else QiblaGreen
 
                                 // Arrow body
                                 drawRect(
@@ -421,36 +412,32 @@ fun QiblaScreen(onBack: () -> Unit) {
                         when {
                             acc >= 999.0 -> {
                                 Surface(
-                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    color = Color.Gray.copy(alpha = 0.1f),
                                     shape = RoundedCornerShape(20.dp),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, Color.Gray.copy(alpha = 0.3f))
                                 ) {
                                     Text(
                                         "Memulakan sensor kompas...",
                                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                                        fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        fontSize = 13.sp, color = Color.Gray
                                     )
                                 }
                             }
                             acc <= 15.0 -> {
-                                val accBg = if (isDark) Color(0xFF1B5E20) else Color(0xFFC8E6C9)
-                                val accText = if (isDark) Color(0xFFB9F6CA) else Color(0xFF1B5E20)
-                                Surface(color = accBg, shape = RoundedCornerShape(20.dp)) {
+                                Surface(color = Color(0xFFC8E6C9), shape = RoundedCornerShape(20.dp)) {
                                     Text(
                                         "✅ Accuracy TINGGI (±${acc.toInt()}°)",
                                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                                        fontSize = 13.sp, color = accText, fontWeight = FontWeight.SemiBold
+                                        fontSize = 13.sp, color = Color(0xFF1B5E20), fontWeight = FontWeight.SemiBold
                                     )
                                 }
                             }
                             else -> {
-                                val accBg = if (isDark) Color(0xFF4A2800) else Color(0xFFFFF3E0)
-                                val accText = if (isDark) Color(0xFFFFB74D) else Color(0xFFE65100)
-                                Surface(color = accBg, shape = RoundedCornerShape(20.dp)) {
+                                Surface(color = Color(0xFFFFF3E0), shape = RoundedCornerShape(20.dp)) {
                                     Text(
                                         "⚠️ Kalibrasi: Hayunkan telefon bentuk 8",
                                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                                        fontSize = 13.sp, color = accText, fontWeight = FontWeight.SemiBold
+                                        fontSize = 13.sp, color = Color(0xFFE65100), fontWeight = FontWeight.SemiBold
                                     )
                                 }
                             }
@@ -471,23 +458,23 @@ fun QiblaScreen(onBack: () -> Unit) {
                                 Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(Icons.Default.Explore, null, tint = if (isDark) Color(0xFF00E676) else QiblaGreen, modifier = Modifier.size(24.dp))
+                                Icon(Icons.Default.Explore, null, tint = QiblaGreen, modifier = Modifier.size(24.dp))
                                 Spacer(Modifier.width(12.dp))
                                 Column {
-                                    Text("Deklinasi Magnetik", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("Deklinasi Magnetik", fontSize = 11.sp, color = Color.Gray)
                                     val dec = declination
                                     Text(
                                         if (dec == null) "—" else "${if (dec >= 0) "+" else ""}${"%.2f".format(dec)}°",
                                         fontSize = 18.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = if (isDark) Color(0xFF00E676) else QiblaGreen,
+                                        color = QiblaGreen,
                                     )
                                     Text(
                                         if (declination == null) "Mengira..."
                                         else if ((declination ?: 0f) >= 0) "Deklinasi Timur (GPS Dynamic)"
                                         else "Deklinasi Barat (GPS Dynamic)",
                                         fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        color = Color.Gray,
                                     )
                                 }
                             }
@@ -501,18 +488,15 @@ fun QiblaScreen(onBack: () -> Unit) {
 
 @Composable
 private fun InfoCard(label: String, value: String, icon: androidx.compose.ui.graphics.vector.ImageVector, modifier: Modifier) {
-    val isDark = isSystemInDarkTheme()
-    val greenColor = if (isDark) Color(0xFF00E676) else QiblaGreen
-
     Card(modifier = modifier, elevation = CardDefaults.cardElevation(2.dp)) {
         Column(
             Modifier.padding(16.dp).fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Icon(icon, null, tint = greenColor, modifier = Modifier.size(22.dp))
+            Icon(icon, null, tint = QiblaGreen, modifier = Modifier.size(22.dp))
             Spacer(Modifier.height(6.dp))
-            Text(value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = greenColor)
-            Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = QiblaGreen)
+            Text(label, fontSize = 11.sp, color = Color.Gray)
         }
     }
 }

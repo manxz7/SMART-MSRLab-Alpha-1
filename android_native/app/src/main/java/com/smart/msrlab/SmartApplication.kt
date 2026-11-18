@@ -6,15 +6,6 @@ import com.smart.msrlab.service.NotificationService
 
 /**
  * SmartApplication — Application class
- *
- * Responsibilities:
- *   1. Initialize DJI SDK (required before any DJI operations)
- *   2. Create notification channels
- *   3. Expose global PreferencesManager instance
- *
- * Mirrors Flutter:
- *   DJIApplication.kt (isRegistered companion flag)
- *   main.dart initNotifications()
  */
 class SmartApplication : Application() {
 
@@ -37,7 +28,6 @@ class SmartApplication : Application() {
         NotificationService.createChannel(this)
 
         // DJI SDK init — must be called in Application.onCreate()
-        // The actual registration (with network) happens when user taps 'Register SDK'
         try {
             dji.sdk.sdkmanager.DJISDKManager.getInstance()
         } catch (e: Exception) {

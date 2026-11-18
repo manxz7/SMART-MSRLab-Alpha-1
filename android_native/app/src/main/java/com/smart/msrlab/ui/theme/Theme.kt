@@ -1,8 +1,6 @@
 package com.smart.msrlab.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
@@ -23,31 +21,17 @@ private val LightColorScheme = lightColorScheme(
     outline = Color(0xFFC2C7C2),
 )
 
-private val DarkColorScheme = darkColorScheme(
-    primary = Color(0xFF00E676),
-    onPrimary = Color.Black,
-    primaryContainer = Color(0xFF135A36),
-    onPrimaryContainer = Color(0xFFD1E8D9),
-    secondary = Color(0xFF66BB6A),
-    onSecondary = Color.Black,
-    background = Color(0xFF121212),
-    onBackground = Color(0xFFE2E2E2),
-    surface = Color(0xFF1E1E1E),
-    onSurface = Color(0xFFE2E2E2),
-    surfaceVariant = Color(0xFF2A2A2A),
-    onSurfaceVariant = Color(0xFFB0B5B0),
-    outline = Color(0xFF424943),
-)
-
+/**
+ * SmartAppTheme — Force Light Mode universally across all screens.
+ * System Dark Mode is ignored so the app stays clean & consistent on every device.
+ */
 @Composable
 fun SmartAppTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = false,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
-
     MaterialTheme(
-        colorScheme = colorScheme,
+        colorScheme = LightColorScheme,
         content = content
     )
 }

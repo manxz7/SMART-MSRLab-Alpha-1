@@ -12,16 +12,14 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlin.math.*
 
 /**
- * CompassService — hardware sensor fusion for Qibla compass
+ * CompassService — Real-time hardware sensor fusion for Qibla compass.
  *
- * Mirrors Flutter location_service.dart QiblaService:
- *   QiblaService.calculateQiblaAngle(lat, lng)  → bearing (degrees)
- *   QiblaService.startCompass(lat, lng)          → Stream<List<double>>
- *                                                   [heading, qiblaAngle, needleRotation, accuracy]
- *   QiblaService.getMagneticDeclination(lat, lon) → double (degrees)
- *
- * Implementation uses TYPE_ROTATION_VECTOR (Android sensor fusion of accelerometer +
- * magnetometer + gyroscope). This is equivalent to flutter_compass's sensor fusion.
+ * Features:
+ *   1. Calculate Qibla bearing (Great Circle formula) to Mecca (21.4225° N, 39.8262° E).
+ *   2. Real-time True North heading using GeomagneticField declination.
+ *   3. Dual sensor strategy: Primary TYPE_ROTATION_VECTOR (sensor fusion),
+ *      Fallback TYPE_ACCELEROMETER + TYPE_MAGNETIC_FIELD for universal device support.
+ *   4. Low-pass filter for smooth 60fps live updates.
  */
 object CompassService {
 
@@ -29,8 +27,7 @@ object CompassService {
     private const val MECCA_LNG = 39.8262
 
     /**
-     * Calculate Qibla bearing from user → Mecca using the Great Circle formula.
-     * Identical to Flutter QiblaService.calculateQiblaAngle().
+     * Calculate Qibla bearing from user → Mecca using the Great Circle formula (degrees, 0–360°).
      */
     fun calculateQiblaAngle(userLat: Double, userLng: Double): Double {
         val lat1     = Math.toRadians(userLat)
@@ -43,9 +40,7 @@ object CompassService {
     }
 
     /**
-     * Get magnetic declination (degrees East +, West −) for a location.
-     * Uses Android's built-in GeomagneticField (IGRF model).
-     * Mirrors Flutter QiblaService.getMagneticDeclination().
+     * Get magnetic declination (degrees East +, West −) for user location (IGRF model).
      */
     fun getMagneticDeclination(lat: Double, lng: Double): Float {
         return try {
@@ -57,75 +52,107 @@ object CompassService {
     }
 
     /**
-     * Start streaming compass readings as a cold Flow.
-     *
-     * Emits CompassReading every time the sensor fires (~10–15 Hz).
-     *
-     * Mirrors Flutter QiblaService.startCompass() stream:
-     *   Stream<List<double>> [heading, qiblaAngle, needleRotation, accuracy]
-     *
-     * Uses TYPE_ROTATION_VECTOR for best accuracy (sensor fusion).
-     * Falls back to TYPE_MAGNETIC_FIELD + TYPE_ACCELEROMETER if not available.
+     * Start live compass Flow.
+     * Emits real-time CompassReading on hardware sensor events.
      */
     fun startCompass(context: Context, userLat: Double, userLng: Double): Flow<CompassReading> =
         callbackFlow {
             val qiblaAngle    = calculateQiblaAngle(userLat, userLng)
+            val declination   = getMagneticDeclination(userLat, userLng)
             val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
             val rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
-                ?: run {
-                    close(Exception("No compass sensor on this device.\n" +
-                            "Try choosing location manually to still use Qibla direction."))
-                    return@callbackFlow
-                }
+            val accelSensor    = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+            val magSensor      = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
+
+            if (rotationSensor == null && (accelSensor == null || magSensor == null)) {
+                close(Exception("No compass hardware sensor found on this device."))
+                return@callbackFlow
+            }
 
             var accuracyStatus = SensorManager.SENSOR_STATUS_ACCURACY_HIGH
+            var currentSmoothedHeading = -1.0
 
             val listener = object : SensorEventListener {
                 private val rotMat      = FloatArray(9)
                 private val orientation = FloatArray(3)
 
+                // Fallback arrays
+                private val lastAccel   = FloatArray(3)
+                private val lastMag     = FloatArray(3)
+                private var hasAccel    = false
+                private var hasMag      = false
+
                 override fun onSensorChanged(event: SensorEvent) {
-                    if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
-                    SensorManager.getRotationMatrixFromVector(rotMat, event.values)
-                    SensorManager.getOrientation(rotMat, orientation)
+                    var rawAzimuthDeg = Double.NaN
 
-                    // Azimuth → compass heading (0–360°, clockwise from North)
-                    val azimuthRad  = orientation[0].toDouble()
-                    val heading     = ((Math.toDegrees(azimuthRad) + 360) % 360)
-
-                    // Rotation needed for compass needle to point to Qibla
-                    val needleRotation = (qiblaAngle - heading + 360) % 360
-
-                    // Map SENSOR_STATUS_* → approximate degrees of uncertainty
-                    // Mirrors Flutter: CompassEvent.accuracy (double degrees)
-                    val accuracyDeg = when (accuracyStatus) {
-                        SensorManager.SENSOR_STATUS_ACCURACY_HIGH   ->  5.0
-                        SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM -> 30.0
-                        SensorManager.SENSOR_STATUS_ACCURACY_LOW    -> 60.0
-                        else                                         -> 999.0 // unreliable
+                    if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR) {
+                        SensorManager.getRotationMatrixFromVector(rotMat, event.values)
+                        SensorManager.getOrientation(rotMat, orientation)
+                        rawAzimuthDeg = (Math.toDegrees(orientation[0].toDouble()) + 360.0) % 360.0
+                    } else if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
+                        System.arraycopy(event.values, 0, lastAccel, 0, 3)
+                        hasAccel = true
+                    } else if (event.sensor.type == Sensor.TYPE_MAGNETIC_FIELD) {
+                        System.arraycopy(event.values, 0, lastMag, 0, 3)
+                        hasMag = true
                     }
 
-                    trySend(CompassReading(
-                        heading        = heading,
-                        qiblaAngle     = qiblaAngle,
-                        needleRotation = needleRotation,
-                        accuracyDegrees = accuracyDeg,
-                    ))
+                    if (rawAzimuthDeg.isNaN() && hasAccel && hasMag) {
+                        if (SensorManager.getRotationMatrix(rotMat, null, lastAccel, lastMag)) {
+                            SensorManager.getOrientation(rotMat, orientation)
+                            rawAzimuthDeg = (Math.toDegrees(orientation[0].toDouble()) + 360.0) % 360.0
+                        }
+                    }
+
+                    if (!rawAzimuthDeg.isNaN()) {
+                        // True North Heading = Magnetic Heading + Declination
+                        val trueHeading = (rawAzimuthDeg + declination + 360.0) % 360.0
+
+                        // Smooth updates via exponential filter (0.35 factor for responsive & steady needle)
+                        val smoothedHeading = if (currentSmoothedHeading < 0) {
+                            trueHeading
+                        } else {
+                            var diff = (trueHeading - currentSmoothedHeading) % 360.0
+                            if (diff > 180.0) diff -= 360.0
+                            if (diff < -180.0) diff += 360.0
+                            (currentSmoothedHeading + diff * 0.35 + 360.0) % 360.0
+                        }
+                        currentSmoothedHeading = smoothedHeading
+
+                        // Needle rotation to point to Qibla relative to top of phone
+                        val needleRotation = (qiblaAngle - smoothedHeading + 360.0) % 360.0
+
+                        val accuracyDeg = when (accuracyStatus) {
+                            SensorManager.SENSOR_STATUS_ACCURACY_HIGH   ->  5.0
+                            SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM -> 15.0
+                            SensorManager.SENSOR_STATUS_ACCURACY_LOW    -> 45.0
+                            else                                         -> 999.0
+                        }
+
+                        trySend(CompassReading(
+                            heading         = smoothedHeading,
+                            qiblaAngle      = qiblaAngle,
+                            needleRotation  = needleRotation,
+                            accuracyDegrees = accuracyDeg,
+                        ))
+                    }
                 }
 
                 override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {
-                    accuracyStatus = accuracy
+                    if (accuracy != SensorManager.SENSOR_STATUS_UNRELIABLE) {
+                        accuracyStatus = accuracy
+                    }
                 }
             }
 
-            sensorManager.registerListener(
-                listener,
-                rotationSensor,
-                SensorManager.SENSOR_DELAY_UI,
-            )
+            if (rotationSensor != null) {
+                sensorManager.registerListener(listener, rotationSensor, SensorManager.SENSOR_DELAY_GAME)
+            } else {
+                sensorManager.registerListener(listener, accelSensor, SensorManager.SENSOR_DELAY_GAME)
+                sensorManager.registerListener(listener, magSensor, SensorManager.SENSOR_DELAY_GAME)
+            }
 
-            // Cleanup when Flow is cancelled (screen closed)
             awaitClose {
                 sensorManager.unregisterListener(listener)
             }
@@ -133,21 +160,15 @@ object CompassService {
 }
 
 /**
- * CompassReading — one data point emitted by the compass Flow
- *
- * Mirrors Flutter QiblaService stream List<double>:
- *   [0] = heading        (phone direction, 0–360°)
- *   [1] = qiblaAngle     (bearing to Mecca, 0–360°)
- *   [2] = needleRotation (rotate needle by this, 0–360°)
- *   [3] = accuracy       (degrees uncertainty: 5/30/60/999)
+ * CompassReading — Live data point emitted by CompassService
  */
 data class CompassReading(
-    /** Which direction the phone is pointing (True North = 0°) */
+    /** Which direction the top of the phone is pointing relative to True North (0–360°) */
     val heading: Double,
-    /** Calculated bearing from user location to Mecca */
+    /** Calculated bearing from user location to Mecca (0–360°) */
     val qiblaAngle: Double,
-    /** Degrees to rotate the compass needle to point at Qibla */
+    /** Degrees to rotate the Qibla arrow to point at Mecca (0–360°) */
     val needleRotation: Double,
-    /** Sensor accuracy: 5° = HIGH, 30° = MEDIUM, 60° = LOW, 999° = unreliable */
+    /** Sensor accuracy uncertainty in degrees */
     val accuracyDegrees: Double,
 )

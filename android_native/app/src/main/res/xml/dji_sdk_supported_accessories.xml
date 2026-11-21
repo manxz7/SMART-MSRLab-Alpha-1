@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <usb-accessory manufacturer="DJI" model="RC-N1" version="1.0" />
+    <usb-accessory manufacturer="DJI" model="RC"    version="1.0" />
+    <usb-accessory manufacturer="DJI" model="RC 2"  version="1.0" />
+</resources>

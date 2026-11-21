@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">SMART SandboxPlayground</string>
+    <string name="title_home">Utama</string>
+    <string name="title_halal_scan">Imbas Halal</string>
+    <string name="title_logo_scan">Imbas Logo</string>
+    <string name="title_qibla">Arah Kiblat</string>
+    <string name="title_prayer">Waktu Solat</string>
+    <string name="title_tasbeeh">Tasbeeh Digital</string>
+    <string name="title_calendar">Kalendar Hijrah</string>
+    <string name="title_drone">Sistem Dron</string>
+    <string name="title_settings">Tetapan</string>
+</resources>

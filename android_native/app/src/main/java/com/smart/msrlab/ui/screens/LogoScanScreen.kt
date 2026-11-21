@@ -1,9 +1,12 @@
 package com.smart.msrlab.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -96,11 +99,42 @@ fun LogoScanScreen(onBack: () -> Unit) {
         }
     }
 
+    fun launchCamera() {
+        try {
+            val file = File(context.cacheDir, "logo_${System.currentTimeMillis()}.jpg")
+            if (!file.exists()) {
+                file.parentFile?.mkdirs()
+                file.createNewFile()
+            }
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+            cameraUri = uri
+            cameraLauncher.launch(uri)
+        } catch (e: Exception) {
+            errorMsg = "Gagal membuka kamera: ${e.message}"
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            launchCamera()
+        } else {
+            errorMsg = "Sila benarkan kebenaran kamera dalam tetapan peranti."
+        }
+    }
+
     fun pickCamera() {
-        val file = File(context.cacheDir, "logo_${System.currentTimeMillis()}.jpg")
-        val uri  = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-        cameraUri = uri
-        cameraLauncher.launch(uri)
+        val hasPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (hasPermission) {
+            launchCamera()
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
     }
 
     Scaffold(

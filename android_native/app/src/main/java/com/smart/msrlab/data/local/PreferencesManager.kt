@@ -38,7 +38,7 @@ class PreferencesManager(context: Context) {
         val KEY_TASBEEH_COUNT   = intPreferencesKey("tasbeeh_count")
         val KEY_TASBEEH_TARGET  = intPreferencesKey("tasbeeh_target")
 
-        const val DEFAULT_API_URL = "https://halal-jakim-backend-vfhol5-85579f-159-65-136-40.sslip.io"
+        const val DEFAULT_API_URL = "https://halal-app.smartnode.my"
         const val DEFAULT_CALC    = "Singapore"
         const val DEFAULT_MADHAB  = "Shafi"
     }

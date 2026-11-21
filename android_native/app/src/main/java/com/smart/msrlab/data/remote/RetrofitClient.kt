@@ -20,8 +20,7 @@ import java.util.concurrent.TimeUnit
  */
 object RetrofitClient {
 
-    const val DEFAULT_BASE_URL =
-        "https://halal-jakim-backend-vfhol5-85579f-159-65-136-40.sslip.io"
+    const val DEFAULT_BASE_URL = "https://halal-app.smartnode.my"
 
     private val loggingInterceptor = HttpLoggingInterceptor().apply {
         level = HttpLoggingInterceptor.Level.BODY

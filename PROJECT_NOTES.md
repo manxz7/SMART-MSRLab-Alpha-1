@@ -1158,5 +1158,769 @@ git push      # push to remote
 
 ---
 
+---
+
+## 12. Performance Optimization — Search Laju
+
+### 12.1 Masalah Asal: Search Lambat
+
+Bila user search "milo", app ambil masa 3-5 saat untuk keluar results. Punca sebenar bukan satu — ada tiga lapisan masalah:
+
+```
+Lapisan 1: SQL terlalu lambat     → ILIKE tanpa index = full table scan
+Lapisan 2: Connection baru tiap kali → psycopg2.connect() ambil 100-200ms
+Lapisan 3: Response terlalu besar → hantar ribuan produk sekaligus ke phone
+```
+
+### 12.2 Fix 1: Trigram Index (pg_trgm)
+
+**Apa itu index dalam database?**
+Index = macam index dalam buku. Tanpa index, kena baca semua muka surat (348K rows) untuk cari perkataan. Dengan index, terus lompat ke halaman betul.
+
+**Kenapa ILIKE perlukan trigram index khusus?**
+
+```sql
+-- Query yang kita buat:
+WHERE company_ner ILIKE '%milo%'
+--                       ↑ ada wildcard DI DEPAN
+
+-- B-tree index biasa (yang PostgreSQL buat secara default):
+-- Boleh guna untuk: WHERE company = 'MILO' (exact match)
+-- Boleh guna untuk: WHERE company LIKE 'MILO%' (wildcard BELAKANG sahaja)
+-- TIDAK boleh guna: WHERE company LIKE '%MILO%' (wildcard DEPAN)
+-- Sebab: B-tree sort alphabetically, tak tahu nak start dari mana
+```
+
+**Trigram (pg_trgm) = cara lain index teks:**
+
+Trigram = pecah perkataan kepada 3-letter chunks:
+```
+"MILO" → ['MIL', 'ILO']
+"NESTLE MILO" → ['NES', 'EST', 'STL', 'TLE', ' MI', 'MIL', 'ILO']
+```
+
+PostgreSQL simpan semua chunks ni dalam index (GIN = Generalized Inverted Index).
+Bila search `%milo%`, PostgreSQL cari chunk `MIL` dan `ILO` → terus jumpa rows yang ada kedua-dua chunks.
+
+**Cara buat trigram index:**
+```sql
+-- Step 1: Enable extension (sekali je, permanent)
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- Step 2: Buat GIN index untuk setiap column yang di-search
+CREATE INDEX idx_company_ner_trgm
+  ON halal_products USING GIN (company_ner gin_trgm_ops);
+
+CREATE INDEX idx_brand_ner_trgm
+  ON halal_products USING GIN (brand_ner gin_trgm_ops);
+
+CREATE INDEX idx_product_ner_trgm
+  ON halal_products USING GIN (product_ner gin_trgm_ops);
+```
+
+**Kenapa tak guna CONCURRENTLY?**
+```sql
+-- CONCURRENTLY = bina index tanpa lock table
+-- Masalah: Tak boleh run dalam transaction block
+-- pgAdmin auto-wrap semua query dalam transaction
+-- Penyelesaian: guna tanpa CONCURRENTLY (lock sekejap, ok untuk development)
+CREATE INDEX idx_company_ner_trgm ON halal_products USING GIN (company_ner gin_trgm_ops);
+```
+
+**Hasil:**
+```
+Sebelum index: Seq Scan → 557ms
+Selepas index: Bitmap Index Scan → 4ms
+Improvement: 125x laju!
+```
+
+**Cara verify index dipakai:**
+```sql
+EXPLAIN ANALYZE
+SELECT company_ner, COUNT(*)
+FROM halal_products
+WHERE company_ner ILIKE '%milo%'
+GROUP BY company_ner;
+
+-- Tengok output:
+-- "Seq Scan" = index TAK dipakai (lambat)
+-- "Bitmap Index Scan using idx_company_ner_trgm" = index DIPAKAI (laju)
+```
+
+---
+
+### 12.3 Fix 2: Connection Pool
+
+**Masalah: buka connection baru setiap request**
+
+```python
+# Cara lama (api.py asal):
+def get_db_connection():
+    conn = psycopg2.connect(**DB_CONFIG)  # ← buka connection baru = 100-200ms
+    return conn
+
+# Setiap kali user search → buka connection → query → tutup connection
+# Connection handshake ambil masa lama!
+```
+
+**Penyelesaian: Connection Pool**
+
+Pool = simpan beberapa connection yang sedia guna. Macam taxi standby, bukan panggil dari jauh setiap kali.
+
+```python
+import psycopg2.pool
+
+# Buka 2-10 connections SEKALI masa start server
+_db_pool = psycopg2.pool.ThreadedConnectionPool(
+    minconn=2,   # minimum 2 connections sentiasa ready
+    maxconn=10,  # maximum 10 connections boleh buka serentak
+    **DB_CONFIG,
+)
+
+# Ambil connection dari pool (pantas — dah ready)
+def get_db_connection():
+    return _db_pool.getconn()
+
+# Pulangkan balik ke pool (bukan tutup — simpan untuk guna lagi)
+def release_db_connection(conn):
+    _db_pool.putconn(conn)
+```
+
+**Kenapa pakai ThreadedConnectionPool dan bukan SimpleConnectionPool?**
+FastAPI handle multiple requests serentak (concurrent). `ThreadedConnectionPool` thread-safe — boleh guna dari multiple threads tanpa conflict. `SimpleConnectionPool` hanya untuk single-thread.
+
+**Penting: Kena pulangkan connection lepas guna!**
+```python
+# Setiap endpoint kena panggil release selepas selesai
+conn = get_db_connection()
+try:
+    cur = conn.cursor()
+    cur.execute("SELECT ...")
+    rows = cur.fetchall()
+    cur.close()
+finally:
+    release_db_connection(conn)  # ← MESTI pulangkan, kalau tidak pool penuh
+```
+
+---
+
+### 12.4 Fix 3: Grouped Response — Hantar Syarikat Sahaja
+
+**Masalah asal: Response terlalu besar**
+
+Bila search "milo", `/search` return semua produk yang ada perkataan "milo" — boleh jadi ratusan records dengan semua fields (nama, alamat, expiry, confidence, etc.). Hantar semua ni ke phone melalui WiFi = lambat.
+
+**Penyelesaian: Dua peringkat fetch**
+
+```
+Peringkat 1 (search screen):
+  → Hantar query ke /search-grouped
+  → Server return SYARIKAT sahaja (nama, bilangan produk)
+  → Response kecil = laju
+
+Peringkat 2 (bila tap syarikat):
+  → Hantar query ke /company-products?company=NESTLE&q=milo
+  → Server return produk untuk syarikat tersebut sahaja
+  → User nampak loading spinner sebentar (acceptable)
+```
+
+---
+
+## 13. Company-Grouped Search — Feature Baru
+
+### 13.1 Konsep
+
+Sebelum: Search "milo" → keluar flat list 50 produk (berulang-ulang)
+Selepas: Search "milo" → keluar senarai syarikat yang ada produk milo → tap → keluar produk
+
+Ini lebih user-friendly sebab:
+- Nestle ada 50 produk milo → dalam satu card je
+- User tahu terus "oh Nestle tu popular" tanpa scroll panjang
+
+### 13.2 Endpoint Baru: `/search-grouped`
+
+```python
+@app.get("/search-grouped")
+def search_grouped(q: str, limit: int = 50):
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    # SQL GROUP BY = kumpulkan rows yang sama company jadi satu baris
+    # COUNT(*) = kira berapa produk dalam kumpulan tu
+    # array_agg = kumpulkan semua categories jadi satu array
+    cur.execute("""
+        SELECT company_ner          AS company,
+               COUNT(*)             AS product_count,
+               array_agg(DISTINCT category) AS categories
+        FROM halal_products
+        WHERE company_ner ILIKE %s
+           OR brand_ner   ILIKE %s
+           OR product_ner ILIKE %s
+        GROUP BY company_ner
+        ORDER BY COUNT(*) DESC
+        LIMIT 100
+    """, (f"%{q}%", f"%{q}%", f"%{q}%"))
+    
+    rows = cur.fetchall()
+    release_db_connection(conn)
+    
+    # Score each company by popularity
+    result_list = []
+    for row in rows:
+        score = _popularity_score(row["company"])
+        result_list.append({
+            "company":          row["company"],
+            "product_count":    row["product_count"],
+            "popularity_score": score,
+            "categories":       row["categories"],
+            "products":         [],  # kosong — fetch bila tap
+        })
+    
+    # Sort: syarikat popular dulu, then yang ada banyak produk
+    result_list.sort(
+        key=lambda x: (x["popularity_score"], x["product_count"]),
+        reverse=True
+    )
+    
+    return {"query": q, "company_count": len(result_list), "companies": result_list[:limit]}
+```
+
+**Cara SQL GROUP BY berfungsi:**
+```sql
+-- Data asal:
+-- id | company_ner  | product_ner
+-- 1  | NESTLE       | MILO 3IN1
+-- 2  | NESTLE       | MILO ORIGINAL
+-- 3  | DUTCH LADY   | MILO SUSU
+
+-- Selepas GROUP BY company_ner:
+-- company_ner | COUNT(*) | array_agg(categories)
+-- NESTLE      | 2        | {Produk, Produk}
+-- DUTCH LADY  | 1        | {Produk}
+```
+
+### 13.3 Popularity Score System
+
+```python
+# Dictionary syarikat terkenal Malaysia dengan score
+POPULAR_COMPANIES = {
+    'NESTLE':      100,
+    'DUTCH LADY':   95,
+    'F&N':          92,
+    'GARDENIA':     90,
+    'MASSIMO':      88,
+    'CADBURY':      87,
+    'MAMEE':        85,
+    'APOLLO':       84,
+    # ... dan lain-lain
+}
+
+def _popularity_score(company_name: str) -> int:
+    upper = company_name.upper()
+    best = 0
+    for brand, score in POPULAR_COMPANIES.items():
+        if brand in upper:          # cek kalau brand name ada dalam company name
+            best = max(best, score) # ambil score tertinggi (kalau ada 2 match)
+    return best
+
+# Contoh:
+# "NESTLE MALAYSIA SDN BHD" → 'NESTLE' ada dalam string → score 100
+# "DUTCH LADY MILK INDUSTRIES" → 'DUTCH LADY' ada → score 95
+# "ABC ENTERPRISE SDN BHD" → tiada match → score 0
+```
+
+### 13.4 Endpoint Baru: `/company-products`
+
+Dipanggil bila user tap sebuah syarikat dalam app:
+
+```python
+@app.get("/company-products")
+def company_products(company: str, q: str):
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    
+    cur.execute("""
+        SELECT id, category, comp_code,
+               company_ner AS company,
+               brand_ner   AS brand,
+               product_ner AS product_name,
+               address_ner AS address,
+               expiry, ner_confidence
+        FROM halal_products
+        WHERE company_ner = %s                           -- exact match untuk syarikat
+          AND (company_ner ILIKE %s                      -- tapi product kena ada keyword
+               OR brand_ner   ILIKE %s
+               OR product_ner ILIKE %s)
+        ORDER BY product_ner
+    """, (company, f"%{q}%", f"%{q}%", f"%{q}%"))
+    
+    rows = cur.fetchall()
+    release_db_connection(conn)
+    return {"company": company, "query": q, "count": len(rows), "products": rows}
+```
+
+Perbezaan `= %s` vs `ILIKE %s`:
+- `company_ner = %s` → exact match (case-sensitive), cari syarikat TEPAT sama nama
+- `company_ner ILIKE %s` → case-insensitive, cari mana-mana yang ada substring
+
+---
+
+## 14. Flutter — Model & UI Untuk Grouped Search
+
+### 14.1 Model Baru: `CompanyResult`
+
+```dart
+class CompanyResult {
+  final String company;        // nama syarikat
+  final int productCount;      // berapa produk dalam DB
+  final int popularityScore;   // 0-100, dari POPULAR_COMPANIES dict
+  final List<String> categories;
+  final List<HalalProduct> products; // kosong masa search, isi bila tap
+
+  factory CompanyResult.fromJson(Map<String, dynamic> json) {
+    return CompanyResult(
+      company:         json['company'] ?? '',
+      productCount:    json['product_count'] ?? 0,
+      popularityScore: json['popularity_score'] ?? 0,
+      categories:      List<String>.from(json['categories'] ?? []),
+      products:        (json['products'] as List? ?? [])
+                         .map((e) => HalalProduct.fromJson(e))
+                         .toList(),
+    );
+  }
+}
+```
+
+### 14.2 API Service: `searchGrouped()`
+
+```dart
+static Future<List<CompanyResult>> searchGrouped(String query) async {
+  final uri = Uri.parse('$apiBaseUrl/search-grouped').replace(
+    queryParameters: {'q': query, 'limit': '50'},
+  );
+  
+  final response = await http.get(uri);
+  
+  if (response.statusCode == 200) {
+    final data   = jsonDecode(response.body);
+    final list   = data['companies'] as List;
+    return list.map((e) => CompanyResult.fromJson(e)).toList();
+  }
+  throw Exception('Search failed: ${response.statusCode}');
+}
+```
+
+### 14.3 CompanyCard Widget
+
+```dart
+class CompanyCard extends StatelessWidget {
+  final CompanyResult company;
+  final String query;          // perlu untuk buka CompanyProductsScreen
+  
+  const CompanyCard({required this.company, required this.query});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: InkWell(
+        onTap: () {
+          // Bila tap → buka screen produk untuk syarikat ni
+          Navigator.push(context, MaterialPageRoute(
+            builder: (_) => CompanyProductsScreen(
+              company: company,
+              query: query,
+            ),
+          ));
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  // Nama syarikat — bold, besar
+                  Expanded(
+                    child: Text(
+                      company.company,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                      ),
+                    ),
+                  ),
+                  // Badge "HALAL ✓" hijau
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Colors.green.shade50,
+                      border: Border.all(color: Colors.green.shade300),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Text('HALAL ✓'),
+                  ),
+                ],
+              ),
+              // Baris kedua: bilangan produk + badge Popular
+              Row(
+                children: [
+                  Text('${company.productCount} produk'),
+                  if (company.popularityScore > 0)
+                    Container(
+                      // Badge amber "Popular" kalau score > 0
+                      child: const Text('Popular'),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+```
+
+### 14.4 CompanyProductsScreen — StatefulWidget dengan Lazy Load
+
+**Kenapa StatefulWidget, bukan StatelessWidget?**
+
+`StatelessWidget` = tak boleh berubah selepas dibina. Tapi kita perlu:
+1. Show loading spinner (state: isLoading = true)
+2. Fetch produk dari API (async operation)
+3. Update UI bila data dah sampai (state: isLoading = false, products = [...])
+
+Semua tu perlukan state yang boleh berubah → kena `StatefulWidget`.
+
+```dart
+class CompanyProductsScreen extends StatefulWidget {
+  final CompanyResult company;
+  final String query;
+
+  const CompanyProductsScreen({required this.company, required this.query});
+
+  @override
+  State<CompanyProductsScreen> createState() => _CompanyProductsScreenState();
+}
+
+class _CompanyProductsScreenState extends State<CompanyProductsScreen> {
+  List<HalalProduct> _products = [];
+  bool _isLoading = true;
+  String _error = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchProducts(); // auto-fetch bila screen dibuka
+  }
+  
+  // initState() = dipanggil SEKALI bila screen mula-mula dibuka
+  // Macam "constructor" untuk screen
+
+  Future<void> _fetchProducts() async {
+    try {
+      final uri = Uri.parse('$apiBaseUrl/company-products').replace(
+        queryParameters: {
+          'company': widget.company.company,  // widget. untuk access parent fields
+          'q':       widget.query,
+        },
+      );
+      
+      final response = await http.get(uri);
+      
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final list = (data['products'] as List)
+            .map((e) => HalalProduct.fromJson(e))
+            .toList();
+        
+        setState(() {
+          _products  = list;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _error     = 'Tidak dapat sambung ke server.';
+        _isLoading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.company.company)),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())  // spinner
+          : _error.isNotEmpty
+              ? Center(child: Text(_error))                   // error message
+              : ListView.builder(                             // senarai produk
+                  itemCount: _products.length,
+                  itemBuilder: (context, i) => ProductCard(product: _products[i]),
+                ),
+    );
+  }
+}
+```
+
+**Flow lengkap:**
+```
+User search "milo"
+    ↓
+SearchScreen panggil ApiService.searchGrouped("milo")
+    ↓
+API /search-grouped → return 20 syarikat (kecil, laju)
+    ↓
+SearchScreen papar CompanyCard untuk setiap syarikat
+    ↓
+User tap "NESTLE MALAYSIA SDN BHD"
+    ↓
+Navigator.push → buka CompanyProductsScreen
+    ↓
+initState() dipanggil → _fetchProducts() start
+    ↓
+API /company-products?company=NESTLE...&q=milo → return produk
+    ↓
+setState() → UI update → papar senarai produk
+```
+
+---
+
+## 15. Docker & Server Deployment
+
+### 15.1 Apa itu Docker?
+
+Docker = cara pack app dalam "container" — kotak yang ada semua yang diperlukan (Python, packages, settings) supaya app jalan sama di mana-mana komputer.
+
+```
+Tanpa Docker:
+  "Jalan kat laptop saya tapi tak jalan kat server!" (masalah biasa)
+  Sebab: version Python lain, package lain, OS lain
+
+Dengan Docker:
+  App + Python + semua packages → satu container
+  Container tu jalan sama je di mana-mana
+```
+
+**Analogy:**
+```
+Tanpa Docker = masak di dapur sendiri, bawa makanan ke rumah orang
+              (boleh jadi sejuk, tumpah, rasa lain)
+
+Dengan Docker = masak dalam container sealed, hantar container tu
+              (sampai dalam keadaan sama macam semula)
+```
+
+### 15.2 docker-compose.yml — Konfigurasi Project Kita
+
+```yaml
+services:
+  db:
+    image: postgres:15          # guna image PostgreSQL version 15 dari Docker Hub
+    container_name: halal_db    # nama container untuk kita refer
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: Huffazpro1!
+      POSTGRES_DB: halal_jakim
+    volumes:
+      - postgres_data:/var/lib/postgresql/data     # simpan data secara permanent
+      - ./halal_jakim_dump.sql:/docker-entrypoint-initdb.d/01_import.sql  # import SQL masa mula
+    ports:
+      - "5431:5432"             # port laptop:port dalam container
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]  # check DB dah ready
+      interval: 10s
+
+  api:
+    build: .                    # bina image dari Dockerfile dalam folder ni
+    container_name: halal_api
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy  # tunggu DB ready dulu sebelum start API
+
+volumes:
+  postgres_data:                # volume untuk simpan data DB secara permanent
+```
+
+**Kenapa ada dua services?**
+- `db` = PostgreSQL database (data store)
+- `api` = FastAPI server (web server)
+
+Dipisahkan supaya boleh:
+- Restart API tanpa kena restart database
+- Scale API ke multiple instances kalau perlu
+- Replace API version tanpa kehilangan data
+
+### 15.3 Dockerfile — Cara Bina Image API
+
+```dockerfile
+FROM python:3.11-slim          # start dari Python base image
+
+WORKDIR /app                   # semua file simpan dalam /app
+
+# Install system dependencies (untuk psycopg2)
+RUN apt-get update && apt-get install -y gcc libpq-dev
+
+COPY requirements.txt .        # copy requirements.txt dulu (untuk caching)
+RUN pip install --no-cache-dir -r requirements.txt  # install packages
+
+COPY api.py .                  # copy code kita
+COPY embeddings.npz .          # copy embeddings file
+
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+**Kenapa copy requirements.txt dulu sebelum api.py?**
+Docker guna layer caching. Kalau requirements.txt tak berubah, dia guna cache `pip install` yang lama. Kalau copy api.py dulu, setiap kali api.py berubah → pip install semula (lambat!).
+
+### 15.4 Workflow Deploy Update
+
+```
+1. Edit api.py kat laptop
+   ↓
+2. SCP (Secure Copy) ke server
+   scp "api.py" setup@192.168.1.37:/home/setup/halal-app/api.py
+   ↓
+3. SSH masuk server
+   ssh setup@192.168.1.37
+   ↓
+4. Rebuild + restart container
+   cd /home/setup/halal-app
+   docker compose build api && docker compose up -d api
+   ↓
+5. Container baru running dengan code terbaru
+```
+
+**Kenapa rebuild pantas kali kedua?**
+Docker cache layer `pip install` — packages tak berubah, jadi skip step tu. Hanya copy api.py baru dan bina layer tu sahaja.
+
+### 15.5 Commands Docker Yang Selalu Guna
+
+```bash
+# Check status semua containers
+docker compose ps
+
+# Tengok logs API
+docker compose logs api
+
+# Tengok logs real-time
+docker compose logs -f api
+
+# Restart satu service
+docker compose restart api
+
+# Stop semua
+docker compose down
+
+# Start semula
+docker compose up -d
+
+# Masuk dalam container (untuk debug)
+docker exec -it halal_api bash
+docker exec -it halal_db psql -U postgres -d halal_jakim
+
+# Run SQL dalam container DB
+docker exec -it halal_db psql -U postgres -d halal_jakim -c "SELECT COUNT(*) FROM halal_products;"
+```
+
+### 15.6 Migrate NER Data ke Server
+
+**Masalah:**
+Database dalam Docker server ada schema lama (columns asal dari JAKIM). NER columns yang kita bersihkan (`company_ner`, `brand_ner` dll) hanya ada dalam laptop kita.
+
+**Penyelesaian — Export dan Import via CSV:**
+
+```bash
+# LAPTOP (pgAdmin) — export NER columns sahaja
+COPY (
+  SELECT id, company_ner, brand_ner, product_ner, address_ner
+  FROM halal_products
+) TO 'C:/Temp/ner_export.csv' CSV HEADER;
+
+# LAPTOP (PowerShell) — SCP ke server
+scp "C:\Temp\ner_export.csv" setup@192.168.1.37:/home/setup/halal-app/ner_export.csv
+
+# SERVER — copy ke dalam container
+docker cp /home/setup/halal-app/ner_export.csv halal_db:/tmp/ner_export.csv
+
+# SERVER — import dan update dalam database
+docker exec -it halal_db psql -U postgres -d halal_jakim -c "
+CREATE TEMP TABLE ner_import (id int, company_ner text, brand_ner text, product_ner text, address_ner text);
+COPY ner_import FROM '/tmp/ner_export.csv' CSV HEADER;
+UPDATE halal_products h SET
+  company_ner = n.company_ner,
+  brand_ner   = n.brand_ner,
+  product_ner = n.product_ner,
+  address_ner = n.address_ner
+FROM ner_import n WHERE h.id = n.id;
+"
+```
+
+**Penjelasan SQL:**
+- `CREATE TEMP TABLE` = buat table sementara (hilang bila session tutup)
+- `COPY ... FROM` = import data dari CSV file
+- `UPDATE ... FROM` = update rows dengan JOIN kepada table lain (SQL JOIN dalam UPDATE)
+- `WHERE h.id = n.id` = match by ID supaya setiap row update dengan NER data yang betul
+
+---
+
+## 16. Cara Debug Masalah Network & Server
+
+### 16.1 App Tak Boleh Connect ke Server
+
+```
+Checklist:
+1. Server running?
+   → ssh masuk server, docker compose ps → tengok STATUS column
+
+2. Port 8000 accessible?
+   → Dari browser phone: http://[IP]:8000/health
+   → Kalau tak keluar, cuba dari laptop dulu: http://localhost:8000/health
+
+3. Firewall block?
+   → Server perlu ada port 8000 open
+
+4. IP betul?
+   → Kalau laptop jadi server: ipconfig → ambil IPv4 WiFi address
+   → Kalau DGX server: domain halal-api.careerlab.my
+
+5. uvicorn bind betul?
+   → Mesti guna --host 0.0.0.0 (bukan localhost/127.0.0.1)
+   → localhost = hanya boleh access dari komputer sama
+   → 0.0.0.0 = boleh access dari mana-mana dalam network
+```
+
+### 16.2 Test Endpoint Dari Browser
+
+Boleh test API terus dari browser — lebih senang dari app:
+
+```
+http://192.168.1.8:8000/health
+http://192.168.1.8:8000/search?q=milo&limit=5
+http://192.168.1.8:8000/search-grouped?q=milo
+https://halal-api.careerlab.my/search-grouped?q=milo
+```
+
+Kalau browser return JSON → API ok, masalah dalam Flutter app.
+Kalau browser pun tak boleh access → masalah server/network.
+
+### 16.3 Check Database Column
+
+Bila dapat error `column "company_ner" does not exist`:
+```bash
+# Check semua columns dalam table
+docker exec -it halal_db psql -U postgres -d halal_jakim -c "\d halal_products"
+
+# Tambah column kalau tak ada
+docker exec -it halal_db psql -U postgres -d halal_jakim -c "
+ALTER TABLE halal_products ADD COLUMN company_ner text;
+UPDATE halal_products SET company_ner = company;
+"
+```
+
+---
+
 *Guide ni akan updated bila ada perkembangan baru dalam projek.* 
 *Semoga berjaya jadi mobile developer yang hebat, Hilman! 💪*

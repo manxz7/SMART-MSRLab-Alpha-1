@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <usb-accessory model="MA600" manufacturer="DJI"/>
+    <usb-accessory model="MA610" manufacturer="DJI"/>
+    <usb-accessory model="MA620" manufacturer="DJI"/>
+</resources>

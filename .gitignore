@@ -50,3 +50,43 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# =============================================================================
+# Python / NER Pipeline
+# =============================================================================
+__pycache__/
+*.py[cod]
+.env
+.venv/
+venv/
+
+# Large data files — never commit to git
+*.csv
+*.sql
+*.npz
+*.npy
+
+# Scraper progress trackers
+progress_*.txt
+
+# =============================================================================
+# Sensitive / local config
+# =============================================================================
+.claude/
+
+# =============================================================================
+# Binary assets (use cloud storage, not git)
+# =============================================================================
+lotus_images/
+
+# Root-level scraping/test screenshots (not app assets)
+/lotus_after_close.png
+/lotus_grocery.png
+/lotus_state.png
+/lotus_inspect.html
+
+# =============================================================================
+# OS junk
+# =============================================================================
+Thumbs.db
+desktop.ini

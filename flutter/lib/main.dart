@@ -27,7 +27,7 @@ import 'services/notification_service.dart';
 /// Defaults to the local network address; override in Settings → API Server.
 String get apiBaseUrl =>
     gPrefs.getString('api_url') ??
-    'https://halal-jakim-backend-vfhol5-85579f-159-65-136-40.sslip.io';
+    'https://halal-app.smartnode.my';
 
 // ─────────────────────────────────────────────
 // GLOBAL SHARED PREFERENCES
@@ -49,7 +49,8 @@ void main() async {
 
   // Migrate: clear old ngrok/local URL so new server default takes effect
   final savedUrl = gPrefs.getString('api_url') ?? '';
-  if (savedUrl.contains('ngrok') || savedUrl.contains('192.168') || savedUrl.contains('careerlab.my')) {
+  if (savedUrl.contains('ngrok') || savedUrl.contains('192.168') || savedUrl.contains('careerlab.my') ||
+      savedUrl.contains('sslip.io') || savedUrl.contains('159.65.136.40')) {
     await gPrefs.remove('api_url');
   }
 

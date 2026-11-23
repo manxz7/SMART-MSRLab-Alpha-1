@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import '../services/drone_service.dart';
 import '../main.dart' show apiBaseUrl;
+import 'detection_screen.dart';
 
 class DroneScreen extends StatefulWidget {
   const DroneScreen({super.key});
@@ -24,8 +25,10 @@ class _DroneScreenState extends State<DroneScreen> {
 
   // Halal scan results
   List<dynamic> _scanResults = [];
-  String _scanStatus = '';   // 'halal' | 'not_found' | ''
-  String _detectedText = '';
+  String _scanStatus = '';
+  List<String> _detectedTexts = [];
+  String _detectionMethod = '';
+  List<String> _debugLog = [];   // log detail untuk debug
 
   bool get _isConnected => _droneStatus.startsWith('connected:');
 
@@ -120,59 +123,117 @@ class _DroneScreenState extends State<DroneScreen> {
       _isScanning = true;
       _scanResults = [];
       _scanStatus = '';
-      _detectedText = '';
-      _log = 'Mengimbas logo/nama halal...';
+      _detectedTexts = [];
+      _detectionMethod = '';
+      _debugLog = [];
+      _log = 'Mengimbas...';
     });
 
+    void addLog(String msg) {
+      setState(() => _debugLog.add(msg));
+    }
+
     try {
-      // 1. Capture frame dari drone camera
-      setState(() => _log = '[1/3] Capture frame...');
+      addLog('[1/3] Capture frame dari kamera...');
       final Uint8List frameBytes = await DroneService.captureFrame();
       final kb = (frameBytes.length / 1024).toStringAsFixed(1);
-      setState(() => _log = '[2/3] Frame ${kb}KB → server...');
+      addLog('[2/3] Frame ${kb}KB — preview...');
+
+      // Tunjuk preview apa yang di-capture sebelum hantar ke server
+      if (mounted) {
+        final proceed = await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: Colors.black,
+            title: Text('Frame ${kb}KB — Hantar ke server?',
+                style: const TextStyle(color: Colors.white, fontSize: 14)),
+            content: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.memory(frameBytes, fit: BoxFit.contain),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Batal', style: TextStyle(color: Colors.red)),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Hantar', style: TextStyle(color: Colors.greenAccent)),
+              ),
+            ],
+          ),
+        );
+        if (proceed != true) {
+          addLog('Dibatalkan oleh pengguna');
+          setState(() { _isScanning = false; _log = 'Dibatalkan'; });
+          return;
+        }
+      }
+
+      addLog('[2/3] Frame ${kb}KB → server...');
+      setState(() => _log = 'Frame ${kb}KB → server...');
 
       final uri = Uri.parse('$apiBaseUrl/scan-premises');
       final request = http.MultipartRequest('POST', uri)
         ..files.add(http.MultipartFile.fromBytes(
-          'file',
-          frameBytes,
-          filename: 'drone_frame.jpg',
+          'file', frameBytes, filename: 'drone_frame.jpg',
         ));
 
       final response = await request.send().timeout(const Duration(seconds: 60));
       final body = await response.stream.bytesToString();
+
+      addLog('[3/3] Response HTTP ${response.statusCode}');
+
+      if (response.statusCode != 200) {
+        addLog('ERROR: Server return ${response.statusCode}');
+        addLog('Body: ${body.length > 200 ? body.substring(0, 200) : body}');
+        setState(() { _scanStatus = 'error'; _log = 'Server error ${response.statusCode}'; });
+        return;
+      }
+
       final data = jsonDecode(body) as Map<String, dynamic>;
 
-      // /scan-image guna 'halal_records', /scan-premises guna 'matches'
       final matches = (data['matches'] ?? data['halal_records']) as List? ?? [];
-      final visionResult = data['vision_result'] as Map<String, dynamic>? ?? {};
-      final visionTexts = data['vision_texts'] as List? ??
-          [visionResult['brand'], visionResult['product']]
-              .whereType<String>()
-              .where((s) => s.isNotEmpty)
-              .toList();
-      final ocrTexts = data['ocr_texts'] as List? ?? [];
+      final visionTexts = (data['vision_texts'] as List? ?? [])
+          .map((t) => t.toString()).toList();
+      final ocrTexts = (data['ocr_texts'] as List? ?? [])
+          .map((t) => t.toString()).toList();
+      final method = data['detection_method']?.toString() ?? 'none';
+
+      // Log detail untuk debug
+      addLog('--- Qwen baca (${visionTexts.length} teks):');
+      if (visionTexts.isEmpty) {
+        addLog('  (kosong — tiada teks dikesan)');
+      } else {
+        for (final t in visionTexts) { addLog('  • $t'); }
+      }
+
+      if (ocrTexts.isNotEmpty) {
+        addLog('--- OCR baca (${ocrTexts.length} teks):');
+        for (final t in ocrTexts) { addLog('  • $t'); }
+      } else {
+        addLog('--- OCR: tidak dijalankan / tiada teks');
+      }
+
+      addLog('--- Kaedah: $method');
+      addLog('--- Hasil JAKIM: ${matches.length} rekod');
 
       final allTexts = [...visionTexts, ...ocrTexts]
-          .map((t) => t.toString())
-          .toSet()
-          .take(5)
-          .toList();
-      final allDetected = allTexts.join(' | ');
+          .map((t) => t.toString()).toSet().take(10).toList();
 
       setState(() {
         _scanResults = matches;
-        _detectedText = allDetected;
+        _detectedTexts = allTexts;
+        _detectionMethod = method;
         _scanStatus = matches.isNotEmpty ? 'halal' : 'not_found';
         _log = matches.isNotEmpty
-            ? '[3/3] ${matches.length} premis dijumpai'
-            : '[3/3] Tiada rekod — dikesan: "$allDetected"';
+            ? '${matches.length} rekod dijumpai'
+            : 'Tiada rekod dalam JAKIM';
       });
     } catch (e) {
-      setState(() {
-        _scanStatus = 'error';
-        _log = 'ERROR: $e';
-      });
+      addLog('EXCEPTION: $e');
+      setState(() { _scanStatus = 'error'; _log = 'ERROR: $e'; });
     } finally {
       setState(() => _isScanning = false);
     }
@@ -331,6 +392,15 @@ class _DroneScreenState extends State<DroneScreen> {
                               color: _isRecording ? Colors.red : Colors.white,
                               onTap: _isConnected && !_loading ? _toggleRecording : null,
                             ),
+                            _buildControlBtn(
+                              icon: Icons.search_rounded,
+                              label: 'Detect',
+                              color: Colors.amberAccent,
+                              onTap: _sdkRegistered ? () {
+                                Navigator.push(context, MaterialPageRoute(
+                                  builder: (_) => const DetectionScreen()));
+                              } : null,
+                            ),
                           ],
                         ),
                         const SizedBox(height: 8),
@@ -341,6 +411,10 @@ class _DroneScreenState extends State<DroneScreen> {
                   // Results list — bawah buttons
                   if (_scanResults.isNotEmpty || _scanStatus == 'not_found')
                     _buildResultsPanel(),
+
+                  // Debug log panel
+                  if (_debugLog.isNotEmpty)
+                    _buildDebugPanel(),
                 ],
               ),
             ),
@@ -354,11 +428,49 @@ class _DroneScreenState extends State<DroneScreen> {
     return Container(
       width: double.infinity,
       color: Colors.black,
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header
+          // ── Teks yang dikesan ──────────────────────────────────────────
+          if (_detectedTexts.isNotEmpty) ...[
+            Row(
+              children: [
+                Icon(
+                  _detectionMethod == 'vision'
+                      ? Icons.auto_awesome_rounded
+                      : Icons.text_fields_rounded,
+                  color: Colors.white38,
+                  size: 13,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  _detectionMethod == 'vision' ? 'Qwen baca:' : 'OCR baca:',
+                  style: const TextStyle(color: Colors.white38, fontSize: 11),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: _detectedTexts.map((t) => Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.white10,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.white24),
+                ),
+                child: Text(t,
+                    style: const TextStyle(color: Colors.white70, fontSize: 11)),
+              )).toList(),
+            ),
+            const SizedBox(height: 12),
+            const Divider(color: Colors.white12),
+            const SizedBox(height: 8),
+          ],
+
+          // ── Header keputusan ────────────────────────────────────────────
           Row(
             children: [
               Icon(
@@ -379,11 +491,8 @@ class _DroneScreenState extends State<DroneScreen> {
               ),
             ],
           ),
-          if (_detectedText.isNotEmpty) ...[
-            const SizedBox(height: 4),
-            Text('Dikesan: $_detectedText',
-                style: const TextStyle(color: Colors.white38, fontSize: 10)),
-          ],
+
+          // ── Senarai rekod JAKIM ─────────────────────────────────────────
           if (_scanResults.isNotEmpty) ...[
             const SizedBox(height: 10),
             ..._scanResults.map((r) => _buildResultCard(r)),
@@ -394,63 +503,201 @@ class _DroneScreenState extends State<DroneScreen> {
   }
 
   Widget _buildResultCard(dynamic r) {
-    final company = r['company'] ?? r['brand'] ?? '-';
-    final address = r['address'] ?? '';
-    final expiry  = r['expiry'] ?? '';
-    final category = r['category'] ?? '';
+    final company  = r['company']?.toString() ?? '-';
+    final brand    = r['brand']?.toString() ?? '';
+    final compCode = r['comp_code']?.toString() ?? '';
+    final category = r['category']?.toString() ?? '';
+    final address  = r['address']?.toString() ?? '';
+    final expiry   = r['expiry']?.toString() ?? '';
+
+    // Tentukan sama ada sijil expired atau tidak
+    bool isExpired = false;
+    if (expiry.isNotEmpty) {
+      try {
+        final parts = expiry.split('-');
+        if (parts.length == 3) {
+          final expiryDate = DateTime(
+            int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+          isExpired = expiryDate.isBefore(DateTime.now());
+        }
+      } catch (_) {}
+    }
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
+      margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
         color: const Color(0xFF0D1F14),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.green.shade900),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: isExpired ? Colors.orange.shade900 : Colors.green.shade900),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              const Icon(Icons.store_rounded, color: Colors.greenAccent, size: 16),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(company,
-                    style: const TextStyle(
-                        color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
-              ),
-              if (expiry.isNotEmpty)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: Colors.green.shade900,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Text(expiry.toString(),
-                      style: const TextStyle(color: Colors.greenAccent, fontSize: 9)),
-                ),
-            ],
-          ),
-          if (category.isNotEmpty) ...[
-            const SizedBox(height: 4),
-            Text(category.toString(),
-                style: const TextStyle(color: Colors.white54, fontSize: 10)),
-          ],
-          if (address.isNotEmpty) ...[
-            const SizedBox(height: 4),
-            Row(
+          // Header kad — nama syarikat + badge expired/aktif
+          Container(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+            decoration: BoxDecoration(
+              color: Colors.green.withValues(alpha: 0.08),
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(10)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(Icons.location_on_rounded, color: Colors.white30, size: 11),
-                const SizedBox(width: 4),
+                const Icon(Icons.store_rounded, color: Colors.greenAccent, size: 16),
+                const SizedBox(width: 8),
                 Expanded(
-                  child: Text(address.toString(),
-                      style: const TextStyle(color: Colors.white38, fontSize: 10),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(company,
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700)),
+                      if (brand.isNotEmpty && brand != company) ...[
+                        const SizedBox(height: 2),
+                        Text(brand,
+                            style: const TextStyle(
+                                color: Colors.white60, fontSize: 11)),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: isExpired
+                        ? Colors.orange.shade900
+                        : Colors.green.shade800,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    isExpired ? 'TAMAT' : 'AKTIF',
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold),
+                  ),
                 ),
               ],
             ),
-          ],
+          ),
+
+          // Body kad — details
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // No. sijil + kategori
+                Row(
+                  children: [
+                    if (compCode.isNotEmpty) ...[
+                      const Icon(Icons.badge_rounded,
+                          color: Colors.greenAccent, size: 12),
+                      const SizedBox(width: 4),
+                      Text('No. Sijil: $compCode',
+                          style: const TextStyle(
+                              color: Colors.greenAccent, fontSize: 11,
+                              fontWeight: FontWeight.w600)),
+                      const SizedBox(width: 12),
+                    ],
+                    if (category.isNotEmpty)
+                      Expanded(
+                        child: Text(category,
+                            style: const TextStyle(
+                                color: Colors.white54, fontSize: 10),
+                            overflow: TextOverflow.ellipsis),
+                      ),
+                  ],
+                ),
+
+                // Tarikh tamat sijil
+                if (expiry.isNotEmpty) ...[
+                  const SizedBox(height: 5),
+                  Row(
+                    children: [
+                      Icon(Icons.event_rounded,
+                          color: isExpired
+                              ? Colors.orange
+                              : Colors.white38,
+                          size: 12),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Sah hingga: $expiry',
+                        style: TextStyle(
+                          color: isExpired ? Colors.orange : Colors.white54,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+
+                // Alamat
+                if (address.isNotEmpty) ...[
+                  const SizedBox(height: 5),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.location_on_rounded,
+                          color: Colors.white30, size: 12),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(address,
+                            style: const TextStyle(
+                                color: Colors.white38, fontSize: 10),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis),
+                      ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDebugPanel() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0A0A0A),
+        border: Border.all(color: Colors.white12),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.terminal_rounded, color: Colors.white38, size: 12),
+              SizedBox(width: 6),
+              Text('DEBUG LOG', style: TextStyle(color: Colors.white38, fontSize: 10,
+                  fontWeight: FontWeight.bold, letterSpacing: 1)),
+            ],
+          ),
+          const SizedBox(height: 6),
+          ..._debugLog.map((line) => Padding(
+            padding: const EdgeInsets.only(bottom: 2),
+            child: Text(line,
+                style: TextStyle(
+                  color: line.startsWith('ERROR') || line.startsWith('EXCEPTION')
+                      ? Colors.redAccent
+                      : line.startsWith('---')
+                          ? Colors.white54
+                          : Colors.white38,
+                  fontSize: 10,
+                  fontFamily: 'monospace',
+                )),
+          )),
         ],
       ),
     );

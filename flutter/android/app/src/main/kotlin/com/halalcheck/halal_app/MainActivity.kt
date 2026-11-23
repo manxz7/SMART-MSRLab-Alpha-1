@@ -199,9 +199,22 @@ class MainActivity : FlutterActivity() {
                         val isBlack = (centerPixel and 0x00FFFFFF) < 0x080808
                         android.util.Log.d("CaptureFrame", "PixelCopy OK: ${w}x${h}, centerPixel=$centerPixel, isBlack=$isBlack")
 
-                        val stream = java.io.ByteArrayOutputStream()
-                        cropped.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, stream)
-                        mainHandler.post { result.success(stream.toByteArray()) }
+                        if (isBlack) {
+                            // PixelCopy berjaya tapi DJI video render ke GPU layer berasingan —
+                            // hasilnya hitam. Guna DJI's getBitmap() sebagai ganti.
+                            android.util.Log.w("CaptureFrame", "PixelCopy black — cuba captureNextFrame")
+                            cropped.recycle()
+                            cameraView.captureNextFrame { bytes ->
+                                mainHandler.post {
+                                    if (bytes != null) result.success(bytes)
+                                    else result.error("NO_FRAME", "PixelCopy black + getBitmap gagal", null)
+                                }
+                            }
+                        } else {
+                            val stream = java.io.ByteArrayOutputStream()
+                            cropped.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, stream)
+                            mainHandler.post { result.success(stream.toByteArray()) }
+                        }
                     } else {
                         android.util.Log.w("CaptureFrame", "PixelCopy failed code: $copyResult")
                         // Fallback: captureNextFrame

@@ -127,21 +127,24 @@ def _load_certified_bodies():
 
 
 # ─────────────────────────────────────────────
-# OCR — EasyOCR for text extraction from images
+# OCR — PaddleOCR for text extraction from images
 # ─────────────────────────────────────────────
-_ocr = None   # EasyOCR Reader instance
+_ocr = None   # PaddleOCR instance
 
 
 def _load_ocr_model():
-    """Load EasyOCR model into memory (called once at startup)."""
+    """Load PaddleOCR model into memory (called once at startup)."""
     global _ocr
     try:
-        import easyocr
-        print("[OCR] Loading EasyOCR (en + ms)...")
-        _ocr = easyocr.Reader(['en', 'ms'], gpu=False)
-        print("[OCR] EasyOCR ready")
+        # Env vars MESTI set sebelum paddle diimport — fix PIR executor bug
+        os.environ.setdefault('FLAGS_enable_pir_in_executor', '0')
+        os.environ.setdefault('FLAGS_pir_apply_shape_optimization_pass', '0')
+        from paddleocr import PaddleOCR
+        print("[OCR] Loading PaddleOCR (en)...")
+        _ocr = PaddleOCR(use_textline_orientation=False, lang='en', show_log=False)
+        print("[OCR] PaddleOCR ready")
     except Exception as e:
-        print(f"[OCR] WARNING: EasyOCR not available — {e}")
+        print(f"[OCR] WARNING: PaddleOCR not available — {e}")
         _ocr = None
 
 
@@ -280,7 +283,7 @@ def _extract_brand_vision(image_bytes: bytes) -> dict:
 
 
 def _extract_text_ocr(image_bytes: bytes) -> list:
-    """Extract text strings from image using EasyOCR, sorted top-to-bottom."""
+    """Extract text strings from image using PaddleOCR, sorted top-to-bottom."""
     if _ocr is None:
         print("[OCR] _ocr is None — model not loaded!")
         return []
@@ -294,15 +297,20 @@ def _extract_text_ocr(image_bytes: bytes) -> list:
             img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
         img_array = np.array(img)
 
-        # EasyOCR: returns [(bbox, text, confidence), ...]
-        results = _ocr.readtext(img_array)
-        print(f"[OCR] EasyOCR raw: {len(results)} items")
+        # PaddleOCR: returns [[[bbox, (text, confidence)], ...]]
+        results = _ocr.ocr(img_array)
+        if not results or not results[0]:
+            print("[OCR] PaddleOCR: no text detected")
+            return []
 
-        # Sort top-to-bottom by Y coordinate
-        results_sorted = sorted(results, key=lambda r: min(pt[1] for pt in r[0]))
+        print(f"[OCR] PaddleOCR raw: {len(results[0])} items")
+
+        # Sort top-to-bottom by Y coordinate of bbox
+        sorted_lines = sorted(results[0], key=lambda r: r[0][0][1])
 
         texts = []
-        for bbox, text, confidence in results_sorted:
+        for line in sorted_lines:
+            bbox, (text, confidence) = line
             print(f"  [{confidence:.2f}] {text!r}")
             if confidence > 0.3 and len(text.strip()) > 1:
                 texts.append(text.strip())
@@ -495,6 +503,10 @@ def _search_jakim_by_texts(texts: list, category: str = None) -> list:
         'biscuit', 'crackers', 'cracker', 'cookies', 'cookie', 'chips', 'snack',
         'drink', 'drinks', 'water', 'juice', 'milk', 'tea', 'coffee', 'food',
         'halal', 'certified', 'malaysia', 'product', 'products', 'brand',
+        # retailer names — muncul dalam nama produk sebagai saluran jualan
+        'speedmart', 'tesco', 'aeon', 'giant', 'mydin', 'lotus', 'econsave',
+        'jaya', 'pasaraya', 'supermarket', 'hypermarket', 'store', 'stores',
+        'mart', 'market', 'shopping', 'mall',
     }
 
     search_terms = []
@@ -512,7 +524,7 @@ def _search_jakim_by_texts(texts: list, category: str = None) -> list:
         if " " in text:
             for word in text.split():
                 word = word.strip()
-                if len(word) >= 3 and not re.fullmatch(r'[\d\.\,\-\(\)]+', word):
+                if len(word) >= 5 and not re.fullmatch(r'[\d\.\,\-\(\)]+', word):
                     if word.lower() not in seen:
                         seen.add(word.lower())
                         search_terms.append(word)
@@ -698,13 +710,11 @@ def _extract_premise_name_vision(image_bytes: bytes) -> list[str]:
         mime = f"image/{fmt}"
 
         premise_prompt = (
-            "You are analyzing an image of a shop or restaurant signboard taken from a drone.\n\n"
-            "Extract ALL text visible in the image, especially:\n"
-            "- Restaurant or shop name (nama kedai/restoran)\n"
-            "- Any Arabic or Jawi text (translate to Rumi if possible)\n"
-            "- Business type (e.g. Restoran, Kedai Makan, Cafe, Hotel)\n\n"
-            "List every piece of text you can read, one per line.\n"
-            "Reply ONLY with the text lines, no explanation, no JSON."
+            "Read ALL text visible in this image.\n\n"
+            "List every word or phrase you can see, one per line.\n"
+            "Include any language: English, Malay, Arabic, Jawi (romanize Jawi/Arabic).\n"
+            "If truly no text exists, reply exactly: NO_TEXT\n\n"
+            "Reply ONLY with the text lines, nothing else."
         )
 
         response = http_requests.post(
@@ -735,9 +745,9 @@ def _extract_premise_name_vision(image_bytes: bytes) -> list[str]:
 
         # Filter out responses yang bermaksud "tiada teks" — jangan search string ni
         NO_TEXT_SIGNALS = [
-            'no text', 'no visible', 'cannot read', 'unable to', 'there is no',
+            'no_text', 'no text', 'no visible', 'cannot read', 'unable to', 'there is no',
             'i cannot', 'no clear', 'no readable', 'not visible', 'no writing',
-            'cannot detect', 'no signage', 'not able'
+            'cannot detect', 'no signage', 'not able', 'no words', 'no readable text'
         ]
         combined = ' '.join(lines).lower()
         if any(sig in combined for sig in NO_TEXT_SIGNALS):
@@ -1299,27 +1309,19 @@ async def scan_premises(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not read image: {str(e)}")
 
-    # Pipeline sama seperti /scan-image, tanpa filter kategori
-    vision_result = _extract_brand_vision(image_bytes)
-    vision_texts  = []
+    # Guna prompt khusus untuk papan tanda/signboard dari drone
+    vision_texts  = _extract_premise_name_vision(image_bytes)
     vision_matches = []
 
-    if vision_result.get("brand") or vision_result.get("product"):
-        vision_texts = [v for v in [
-            vision_result.get("brand", ""),
-            vision_result.get("product", ""),
-        ] if v]
-        keywords = vision_result.get("keywords", [])
-        if isinstance(keywords, list):
-            vision_texts += [k for k in keywords if isinstance(k, str) and len(k) >= 3]
-        vision_matches = _search_jakim_by_texts(vision_texts)
+    if vision_texts:
+        vision_matches = _search_premises_by_texts(vision_texts)
         print(f"[DroneVision] Terms: {vision_texts}, matches: {len(vision_matches)}")
 
     ocr_texts  = []
     ocr_matches = []
     if not vision_matches:
         ocr_texts   = _extract_text_ocr(image_bytes)
-        ocr_matches = _search_jakim_by_texts(ocr_texts)
+        ocr_matches = _search_premises_by_texts(ocr_texts)
         print(f"[DroneOCR] Texts: {ocr_texts}, matches: {len(ocr_matches)}")
 
     seen_ids = set()
@@ -1332,7 +1334,6 @@ async def scan_premises(file: UploadFile = File(...)):
     detection_method = "vision" if vision_matches else ("ocr" if ocr_matches else "none")
 
     return {
-        "vision_result":    vision_result,
         "vision_texts":     vision_texts,
         "ocr_texts":        ocr_texts,
         "is_halal_premise": len(merged) > 0,

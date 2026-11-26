@@ -30,13 +30,21 @@ import requests as http_requests
 from PIL import Image
 
 # ─────────────────────────────────────────────
-# QWEN VISION — LM Studio config
-# Model: qwen/qwen2.5-vl-7b (vision model)
-# Guna untuk baca nama brand/produk dari gambar
+# QWEN VISION — OpenRouter config
+# Model Qwen dihoskan oleh OpenRouter (API serasi OpenAI), tak perlu GPU sendiri.
+# Guna untuk baca nama brand/produk, logo halal dan papan tanda premis dari gambar.
+#
+# Tetapkan environment variable di server (JANGAN tulis key dalam kod / git):
+#   OPENROUTER_API_KEY = sk-or-v1-...
+#   VISION_MODEL       = qwen/qwen3-vl-8b-instruct   (pilihan, ini lalai)
+#   VISION_BASE_URL    = https://openrouter.ai/api   (pilihan, ini lalai)
 # ─────────────────────────────────────────────
-LM_STUDIO_URL = "https://lvq934y3nbv8so-5000.proxy.runpod.net/"
-LM_STUDIO_KEY = ""
-VISION_MODEL  = "qwen/qwen3-vl-8b"
+LM_STUDIO_URL = os.environ.get("VISION_BASE_URL", "https://openrouter.ai/api")
+LM_STUDIO_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+VISION_MODEL  = os.environ.get("VISION_MODEL", "qwen/qwen3-vl-8b-instruct")
+
+if not LM_STUDIO_KEY:
+    print("[Vision] AMARAN: OPENROUTER_API_KEY tidak ditetapkan — scan produk/logo/premis akan gagal.")
 
 
 def _vision_chat_completions_url() -> str:

@@ -35,6 +35,9 @@ services:
       DB_NAME: halal_jakim
       DB_USER: postgres
       DB_PASSWORD: Huffazpro1!
+      # Nilai diambil dari fail backend/.env (jangan commit fail .env)
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      VISION_MODEL: ${VISION_MODEL:-qwen/qwen3-vl-8b-instruct}
     restart: unless-stopped
 
 volumes:

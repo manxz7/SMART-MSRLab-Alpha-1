@@ -29,8 +29,15 @@ Future<void> initNotifications() async {
   const androidSettings =
       AndroidInitializationSettings('@mipmap/ic_launcher');
 
+  // iOS settings — minta izin notifikasi (alert, badge, bunyi) semasa init
+  const iosSettings = DarwinInitializationSettings(
+    requestAlertPermission: true,
+    requestBadgePermission: true,
+    requestSoundPermission: true,
+  );
+
   await _plugin.initialize(
-    const InitializationSettings(android: androidSettings),
+    const InitializationSettings(android: androidSettings, iOS: iosSettings),
   );
 }
 
@@ -85,6 +92,7 @@ Future<void> schedulePrayerNotifications({
             importance: Importance.high,
             priority: Priority.high,
           ),
+          iOS: DarwinNotificationDetails(presentSound: true),
         ),
         androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
         uiLocalNotificationDateInterpretation:

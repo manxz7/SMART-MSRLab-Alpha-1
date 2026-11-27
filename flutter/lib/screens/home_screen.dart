@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:hijri/hijri_calendar.dart';
@@ -408,7 +409,8 @@ class _HomeScreenState extends State<HomeScreen> {
         subtitle: 'Takwim Islam',
         screen: const CalendarScreen(),
       ),
-      _FeatureInfo(
+      // DJI SDK hanya diintegrasi untuk Android — sembunyikan di iOS
+      if (Platform.isAndroid) _FeatureInfo(
         label: 'Drone Scanner',
         icon: Icons.flight_rounded,
         color: const Color(0xFF1565C0),

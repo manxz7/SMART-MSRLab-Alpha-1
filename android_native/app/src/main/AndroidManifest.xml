@@ -20,13 +20,25 @@
     <!-- ── Vibration ─────────────────────────────────────────────────────────── -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
-    <!-- ── DJI SDK: USB RC controller ───────────────────────────────────────── -->
-    <uses-permission android:name="android.permission.USB_PERMISSION" />
+    <!-- ── DJI SDK (sama seperti app Flutter) ──────────────────────────────── -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- WAJIB Android 12+ atau DJI SDK crash -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!-- ── Hardware features (all optional) ─────────────────────────────────── -->
     <uses-feature android:name="android.hardware.camera"         android:required="false" />
     <uses-feature android:name="android.hardware.sensor.compass" android:required="false" />
     <uses-feature android:name="android.hardware.usb.host"       android:required="false" />
+    <uses-feature android:name="android.hardware.usb.accessory"  android:required="false" />
 
     <application
         android:name=".SmartApplication"
@@ -36,7 +48,12 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.SmartApp"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true"
+        android:largeHeap="true"
+        android:extractNativeLibs="true">
+
+        <!-- DJI SDK guna Apache HTTP legacy API -->
+        <uses-library android:name="org.apache.http.legacy" android:required="false" />
 
         <!-- ── Main Activity ─────────────────────────────────────────────────── -->
         <activity
@@ -79,10 +96,11 @@
         </provider>
 
         <!-- ── DJI App Key ──────────────────────────────────────────────────── -->
-        <!-- Copy the value from android/app/src/main/AndroidManifest.xml       -->
+        <!-- Nilai dari android_native/local.properties → DJI_API_KEY=...       -->
+        <!-- Key mesti didaftarkan untuk package com.smart.msrlab               -->
         <meta-data
             android:name="com.dji.sdk.API_KEY"
-            android:value="YOUR_DJI_APP_KEY_HERE" />
+            android:value="${DJI_API_KEY}" />
 
     </application>
 

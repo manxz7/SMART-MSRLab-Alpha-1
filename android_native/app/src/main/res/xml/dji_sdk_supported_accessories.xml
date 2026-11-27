@@ -1,6 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Alat kawalan (RC) DJI yang boleh mencetuskan app bila disambung melalui USB.
+     Gabungan senarai sample rasmi DJI MSDK v4 + senarai dari app Flutter. -->
 <resources>
-    <usb-accessory manufacturer="DJI" model="RC-N1" version="1.0" />
-    <usb-accessory manufacturer="DJI" model="RC"    version="1.0" />
-    <usb-accessory manufacturer="DJI" model="RC 2"  version="1.0" />
+    <usb-accessory manufacturer="DJI" model="T600" />
+    <usb-accessory manufacturer="DJI" model="AG410" />
+    <usb-accessory manufacturer="DJI" model="com.dji.logiclink" />
+    <usb-accessory manufacturer="DJI" model="WM160" />
+    <usb-accessory manufacturer="DJI" model="MA600" />
+    <usb-accessory manufacturer="DJI" model="MA610" />
+    <usb-accessory manufacturer="DJI" model="MA620" />
+    <usb-accessory manufacturer="DJI" model="RC-N1" />
+    <usb-accessory manufacturer="DJI" model="RC" />
+    <usb-accessory manufacturer="DJI" model="RC 2" />
 </resources>

@@ -1,3 +1,14 @@
+import java.util.Properties
+
+// DJI App Key dibaca dari local.properties (fail ini TIDAK masuk ke GitHub).
+// Tambah satu baris dalam android_native/local.properties:
+//   DJI_API_KEY=key_dari_developer.dji.com
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+val djiApiKey: String = localProps.getProperty("DJI_API_KEY") ?: ""
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -19,6 +30,12 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+
+        // DJI SDK melebihi had 64K method — wajib
+        multiDexEnabled = true
+
+        // Dimasukkan ke AndroidManifest sebagai ${DJI_API_KEY}
+        manifestPlaceholders["DJI_API_KEY"] = djiApiKey
 
         // DJI SDK: restrict to ARM architectures supported by DJI
         ndk {
@@ -49,6 +66,11 @@ android {
         compose = true
     }
 
+    // DJI SDK ada fail .jet/.ogg yang tak boleh di-compress
+    androidResources {
+        noCompress += listOf(".tflite", ".flite", ".wav", ".jet", ".ogg", ".mp4", ".dji")
+    }
+
     packaging {
         resources {
             excludes += setOf(
@@ -58,12 +80,37 @@ android {
                 "META-INF/LICENSE",
                 "META-INF/LICENSE.txt",
                 "META-INF/NOTICE",
-                "META-INF/NOTICE.txt"
+                "META-INF/NOTICE.txt",
+                "assets/location_map_gps_locked.png",
+                "assets/location_map_gps_3d.png"
             )
         }
         jniLibs {
             // DJI SDK requires legacy packaging for JNI libs
             useLegacyPackaging = true
+            // Fail .so DJI ada section ELF tidak standard — JANGAN strip, nanti crash
+            keepDebugSymbols += setOf(
+                "*/*/libdjivideo.so",
+                "*/*/libSDKRelativeJNI.so",
+                "*/*/libFlyForbid.so",
+                "*/*/libduml_vision_bokeh.so",
+                "*/*/libyuv2.so",
+                "*/*/libGroudStation.so",
+                "*/*/libFRCorkscrew.so",
+                "*/*/libUpgradeVerify.so",
+                "*/*/libFR.so",
+                "*/*/libDJIFlySafeCore.so",
+                "*/*/libdjifs_jni.so",
+                "*/*/libsfjni.so",
+                "*/*/libDJICommonJNI.so",
+                "*/*/libDJICSDKCommon.so",
+                "*/*/libDJIUpgradeCore.so",
+                "*/*/libDJIUpgradeJNI.so",
+                "*/*/libDJIWaypointV2Core.so",
+                "*/*/libAMapSDK_MAP_v6_9_2.so",
+                "*/*/libDJIMOP.so",
+                "*/*/libDJISDKLOGJNI.so"
+            )
         }
     }
 }
@@ -108,9 +155,14 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.4.0")
     implementation("androidx.camera:camera-view:1.4.0")
 
-    // ── Local Libraries / DJI SDK ─────────────────────────────────────────────
-    // To use physical DJI drone hardware, place dji-sdk-v4-4.16.4.aar in app/libs/
-    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
+    // ── DJI Mobile SDK v4.18 (sama seperti app Flutter) ───────────────────────
+    implementation("com.dji:dji-sdk:4.18") {
+        exclude(group = "com.dji", module = "library-anti-distortion")
+    }
+    // "provided" = DJI muat sendiri melalui Helper.install(), tak masuk dalam APK
+    compileOnly("com.dji:dji-sdk-provided:4.18")
+    implementation("androidx.multidex:multidex:2.0.1")
+    implementation("androidx.constraintlayout:constraintlayout:2.1.4") // diperlukan oleh layout DJI SDK
 
     // ── Notifications ─────────────────────────────────────────────────────────
     implementation("androidx.core:core-ktx:1.13.1") // NotificationCompat

@@ -18,6 +18,16 @@ class SmartApplication : Application() {
             private set
     }
 
+    /**
+     * DJI SDK v4 dimuatkan di sini (sebelum onCreate) — sama seperti DJIApplication
+     * dalam app Flutter. Helper.install() memuatkan kelas "dji-sdk-provided".
+     */
+    override fun attachBaseContext(base: android.content.Context) {
+        super.attachBaseContext(base)
+        androidx.multidex.MultiDex.install(this)
+        com.cySdkyc.clx.Helper.install(this)
+    }
+
     override fun onCreate() {
         super.onCreate()
 
@@ -26,12 +36,5 @@ class SmartApplication : Application() {
 
         // Create notification channels
         NotificationService.createChannel(this)
-
-        // DJI SDK init — must be called in Application.onCreate()
-        try {
-            dji.sdk.sdkmanager.DJISDKManager.getInstance()
-        } catch (e: Exception) {
-            android.util.Log.w("SmartApp", "DJI SDK not available: ${e.message}")
-        }
     }
 }

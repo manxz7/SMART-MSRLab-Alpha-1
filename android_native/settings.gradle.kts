@@ -14,6 +14,8 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         maven { url = uri("https://jitpack.io") }
+        // DJI Mobile SDK v4 (sama seperti app Flutter)
+        maven { url = uri("https://artifactory.djiits.com/artifactory/ams-android-sdk/") }
     }
 }
 

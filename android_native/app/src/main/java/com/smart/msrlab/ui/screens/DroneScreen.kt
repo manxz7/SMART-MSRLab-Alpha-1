@@ -1,7 +1,5 @@
 package com.smart.msrlab.ui.screens
 
-import android.view.SurfaceHolder
-import android.view.SurfaceView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -26,9 +24,10 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.smart.msrlab.SmartApplication
 import com.smart.msrlab.data.model.HalalProduct
 import com.smart.msrlab.data.remote.RetrofitClient
-import dji.sdk.camera.VideoFeeder
-import dji.sdk.codec.DJICodecManager
+import com.smart.msrlab.drone.DroneVideoView
 import dji.sdk.sdkmanager.DJISDKManager
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -62,8 +61,9 @@ fun DroneScreen(onBack: () -> Unit) {
     var scanStatus    by remember { mutableStateOf("") } // "halal" | "not_found" | "error" | ""
     var detectedText  by remember { mutableStateOf("") }
 
-    // Codec manager for DJI live video
-    var codecManager by remember { mutableStateOf<DJICodecManager?>(null) }
+    // Paparan live video drone (TextureView + DJICodecManager)
+    var videoView by remember { mutableStateOf<DroneVideoView?>(null) }
+    DisposableEffect(Unit) { onDispose { videoView?.stopVideoFeed() } }
 
     val isConnected = droneStatus.startsWith("connected:")
 
@@ -177,21 +177,17 @@ fun DroneScreen(onBack: () -> Unit) {
             logText      = "Mengimbas logo/nama halal..."
 
             try {
-                // Capture JPEG frame from codec manager's last frame
+                // Tangkap frame sebenar dari video drone (PixelCopy → getBitmap → YUV)
                 logText = "[1/3] Capture frame..."
-                val frameBytes: ByteArray = withContext(Dispatchers.IO) {
-                    codecManager?.let { cm ->
-                        val bmp = android.graphics.Bitmap.createBitmap(
-                            cm.videoWidth.takeIf { it > 0 } ?: 1280,
-                            cm.videoHeight.takeIf { it > 0 } ?: 720,
-                            android.graphics.Bitmap.Config.ARGB_8888
-                        )
-                        val stream = java.io.ByteArrayOutputStream()
-                        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, stream)
-                        bmp.recycle()
-                        stream.toByteArray()
-                    } ?: ByteArray(0)
-                }
+                val activity = context as? android.app.Activity
+                val view = videoView
+                val frameBytes: ByteArray =
+                    if (activity == null || view == null) ByteArray(0)
+                    else suspendCancellableCoroutine { cont ->
+                        view.captureFrame(activity) { bytes ->
+                            if (cont.isActive) cont.resume(bytes ?: ByteArray(0))
+                        }
+                    }
                 if (frameBytes.isEmpty()) {
                     logText = "Gagal capture frame — pastikan drone bersambung"
                     scanStatus = "error"; return@launch
@@ -223,8 +219,20 @@ fun DroneScreen(onBack: () -> Unit) {
         }
     }
 
-    // Initial status check
-    LaunchedEffect(Unit) { checkStatus() }
+    // Semak status bila skrin dibuka, kemudian setiap 3 saat selepas SDK didaftar
+    // (supaya video terus keluar bila RC/drone disambung, tanpa tekan refresh)
+    LaunchedEffect(Unit) {
+        checkStatus()
+        while (true) {
+            kotlinx.coroutines.delay(3000)
+            if (!SmartApplication.isDjiRegistered || isLoading || isScanning) continue
+            val product = withContext(Dispatchers.IO) {
+                try { DJISDKManager.getInstance().product } catch (_: Exception) { null }
+            }
+            val nowConnected = product != null && product.isConnected
+            if (nowConnected != isConnected) checkStatus()
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -279,31 +287,9 @@ fun DroneScreen(onBack: () -> Unit) {
             // ── Live camera feed 16:9 ─────────────────────────────────────────
             AspectRatio16x9 {
                 Box(Modifier.fillMaxSize()) {
-                    // DJI live camera SurfaceView
+                    // DJI live camera (TextureView — sama seperti app Flutter)
                     AndroidView(
-                        factory = { ctx ->
-                            SurfaceView(ctx).also { sv ->
-                                sv.holder.addCallback(object : SurfaceHolder.Callback {
-                                    override fun surfaceCreated(h: SurfaceHolder) {
-                                        try {
-                                            val cm = DJICodecManager(ctx, h, sv.width, sv.height)
-                                            codecManager = cm
-                                            VideoFeeder.getInstance()
-                                                ?.primaryVideoFeed
-                                                ?.addVideoDataListener { data, size ->
-                                                    cm.sendDataToDecoder(data, size)
-                                                }
-                                        } catch (_: Exception) {}
-                                    }
-                                    override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, hh: Int) {}
-                                    override fun surfaceDestroyed(h: SurfaceHolder) {
-                                        codecManager?.cleanSurface()
-                                        codecManager?.destroyCodec()
-                                        codecManager = null
-                                    }
-                                })
-                            }
-                        },
+                        factory = { ctx -> DroneVideoView(ctx).also { videoView = it } },
                         modifier = Modifier.fillMaxSize(),
                     )
 

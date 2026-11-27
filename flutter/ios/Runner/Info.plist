@@ -30,6 +30,10 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>SMART perlukan kamera untuk mengimbas produk, logo halal dan premis.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>SMART guna lokasi untuk arah kiblat dan waktu solat. Lokasi hanya digunakan semasa app dibuka.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>SMART guna lokasi untuk arah kiblat dan waktu solat. Lokasi hanya digunakan semasa app dibuka.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>SMART perlukan lokasi untuk arah kiblat dan waktu solat.</string>
 	<key>NSMotionUsageDescription</key>
